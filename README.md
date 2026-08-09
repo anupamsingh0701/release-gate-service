@@ -1,47 +1,84 @@
 # TDS GA7 Release Gate Policy Service
 
-Deterministic policy evaluation endpoint (`POST /release-gate`) for gating container image promotions based on least-privilege CI permissions, complete matrix testing, action pinning, image hardening, production branch/ref validation, and environment approvals.
-
 [![TDS GA7 Release Gate](https://github.com/anupamsingh0701/release-gate-service/actions/workflows/release-gate.yml/badge.svg?branch=main)](https://github.com/anupamsingh0701/release-gate-service/actions/workflows/release-gate.yml)
 
-## Security Policy Rules Enforced
+A **deterministic HTTP policy endpoint** (`POST /release-gate`) that decides whether a GitHub Actions CI run may promote a container image.
 
-1. **Least-Privilege Permissions (`EXCESS_PERMISSION`)**:
-   - `workflow.permissions` must be exactly `{"contents": "read", "packages": "write", "id-token": "none"}` with no additional scopes.
+## Endpoint
 
-2. **PR Trigger Safety (`UNSAFE_PR_TRIGGER`)**:
-   - Pull request events must use `pull_request`, never `pull_request_target`.
+```
+POST /release-gate
+```
 
-3. **Complete Testing Matrix (`TESTS_INCOMPLETE`)**:
-   - `testsPassed` must be `true`, `matrixComplete` must be `true`, and `failFast` must be `false`.
+Evaluates a JSON payload against all 11 policy rules and returns a `promote` or `block` decision with the applicable violation codes.
 
-4. **Action Pinning (`MUTABLE_ACTION`)**:
-   - Actions owned by `actions` may use a version tag or commit SHA (no mutable branches).
-   - Third-party actions must be pinned to a full 40-character lowercase hexadecimal commit SHA.
-
-5. **Hardened Multi-Stage Docker Image**:
-   - Multi-stage build (`SINGLE_STAGE_IMAGE` if `multiStage` is not `true`).
-   - Non-root runtime (`ROOT_RUNTIME` if `runsAsRoot` is not `false`).
-   - Safe build secrets (`SECRET_IN_LAYER` if `secretMode` is not `"none"` or `"buildkit"`).
-   - Zero critical CVEs (`CRITICAL_CVE` if `criticalVulnerabilities` is not `0`).
-   - Digest pinned (`UNPINNED_IMAGE` if `digestPinned` is not `true`).
-
-6. **Production Release Gates**:
-   - Push event on `refs/heads/main` (`INVALID_PRODUCTION_REF`).
-   - Environment approval required (`APPROVAL_REQUIRED` if `environmentApproval` is not `true`).
-
-## Response Schema
+## Response Format
 
 ```json
-{
-  "decision": "promote | block",
-  "violations": ["CODE", "..."]
-}
+{"decision": "promote | block", "violations": ["CODE", "..."]}
+```
+
+`promote` is returned **only** when `violations` is empty.
+
+## Policy Rules
+
+| Violation Code | Rule |
+|---|---|
+| `EXCESS_PERMISSION` | `workflow.permissions` must be exactly `{"contents":"read","packages":"write","id-token":"none"}` |
+| `UNSAFE_PR_TRIGGER` | PR events must use `pull_request`, never `pull_request_target` |
+| `TESTS_INCOMPLETE` | `testsPassed:true`, `matrixComplete:true`, `failFast:false` |
+| `MUTABLE_ACTION` | `actions/*` owner: version tag or SHA; third-party: 40-char hex SHA |
+| `SINGLE_STAGE_IMAGE` | `image.multiStage` must be `true` |
+| `ROOT_RUNTIME` | `image.runsAsRoot` must be `false` |
+| `SECRET_IN_LAYER` | `image.secretMode` must be `"none"` or `"buildkit"` |
+| `CRITICAL_CVE` | `image.criticalVulnerabilities` must be `0` |
+| `UNPINNED_IMAGE` | `image.digestPinned` must be `true` |
+| `INVALID_PRODUCTION_REF` | Production: `event=="push"` and `ref=="refs/heads/main"` |
+| `APPROVAL_REQUIRED` | Production: `workflow.environmentApproval` must be `true` |
+
+## Example Request
+
+```bash
+curl -X POST https://release-gate-service.onrender.com/release-gate \
+  -H "Content-Type: application/json" \
+  -d '{
+    "target": "preview",
+    "event": "pull_request",
+    "ref": "refs/pull/42/merge",
+    "workflow": {
+      "trigger": "pull_request",
+      "permissions": {"contents":"read","packages":"write","id-token":"none"},
+      "testsPassed": true, "matrixComplete": true, "failFast": false,
+      "actions": [{"owner":"actions","name":"checkout","ref":"v4"}]
+    },
+    "image": {
+      "multiStage": true, "runsAsRoot": false, "secretMode": "none",
+      "criticalVulnerabilities": 0, "digestPinned": true
+    }
+  }'
+```
+
+Expected response:
+```json
+{"decision": "promote", "violations": []}
+```
+
+## Running Locally
+
+```bash
+pip install -r requirements.txt
+uvicorn app:app --host 0.0.0.0 --port 8000
 ```
 
 ## Running Tests
 
 ```bash
-pip install -r requirements.txt
 pytest test_release_gate.py -v
 ```
+
+## Deploying to Render
+
+1. Fork/push this repo to GitHub.
+2. On [Render](https://dashboard.render.com/), create a **New Web Service**.
+3. Connect your GitHub repo.
+4. Render auto-detects `render.yaml` — just click **Deploy**.
